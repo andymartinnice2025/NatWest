@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>NatWest Mock – Proactive Message → WebRTC Call + Transcription</title>
+  <title>NatWest Mock – Proactive Message → WebRTC Call + Transcription + xApp</title>
 
   <style>
     :root{
@@ -339,7 +339,7 @@
       color: var(--nw-purple);
     }
 
-    /* Modals */
+    /* Modals / overlays */
     .modal, .overlay{
       position:absolute;
       inset:0;
@@ -437,28 +437,23 @@
     }
 
     /* Transcript list */
+    #transcriptCard{
+      display:flex;
+      flex-direction:column;
+      height:320px;
+      min-height:260px;
+    }
     .transcriptList{
       margin-top:10px;
       display:flex;
       flex-direction:column;
       gap:8px;
-
-      /* ✅ Make this the scroll region so the card doesn't grow forever */
       overflow:auto;
       flex:1;
       padding-right:4px;
       scroll-behavior:smooth;
-      min-height:0; /* important for flex overflow in some browsers */
+      min-height:0;
     }
-
-    /* ✅ Keep transcript card a fixed-height container */
-    #transcriptCard{
-      display:flex;
-      flex-direction:column;
-      height:320px;     /* tweak as desired */
-      min-height:260px; /* keeps your original feel */
-    }
-
     .tLine{
       max-width:92%;
       border-radius:14px;
@@ -487,6 +482,13 @@
       margin-top:6px;
       font-weight:900;
       letter-spacing:.2px;
+    }
+
+    /* xApp iframe */
+    #xappFrame{
+      border:0;
+      width:100%;
+      height:100%;
     }
 
     /* Hide Cognigy launcher visually once we use our own controls */
@@ -544,11 +546,13 @@
             <div class="avatar">NW</div>
             <div class="bubble">
               <div class="bubbleText">
-                <strong>In-App Message:</strong> Hi Andy 👋 We’re here to help you make the most of your money. You may have savings that could potentially earn more depending on your goals. Would you like to see what that could look like? 
+                <strong>In-App Message:</strong> Hi Andy 👋 We’ve noticed you’ve had around <b>£5,000</b> sitting in your current account over the past few months.
+                You could potentially earn more on that money instead of leaving it in your current account.
+                Would you like to see what that could look like?
               </div>
 
               <div class="btnRow">
-                <button class="btn primary" id="btnProjection">📊 Explore Options</button>
+                <button class="btn primary" id="btnProjection">📊 View Projection</button>
                 <button class="btn call" id="btnCallNow">📞 Call Now</button>
               </div>
 
@@ -662,17 +666,37 @@
               <button class="btn ghost" id="btnClearTranscript" title="Clear transcript">Clear</button>
             </div>
 
-            <!-- TRANSCRIPT AREA -->
-            <div class="projCard" id="transcriptCard" style="min-height:260px;">
+            <!-- Transcript -->
+            <div class="projCard" id="transcriptCard">
               <div class="projTitle">
                 <span>Live transcription</span>
                 <span class="pill" id="transcriptCount">0 lines</span>
               </div>
-              <!-- ✅ removed the "As you and the bot..." line -->
-              <div class="transcriptList" id="transcriptList" aria-live="polite"></div>
-            </div>
 
-            <!-- ✅ removed the microphone tip line -->
+              <div class="transcriptList" id="transcriptList" aria-live="polite"></div>
+
+              <!-- CTA appears when trigger phrase is spoken -->
+              <div id="xappCtaArea" style="margin-top:10px; display:none;">
+                <button class="btn call" id="btnOpenXapp" disabled>Click Here</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- xApp overlay -->
+      <div class="overlay" id="xappOverlay" aria-hidden="true">
+        <div class="sheet callSheet">
+          <div class="topBar">
+            <div class="h">Your options</div>
+            <button class="btn ghost" id="btnCloseXapp">✕</button>
+          </div>
+
+          <div class="callBody" style="padding:0;">
+            <iframe
+              id="xappFrame"
+              sandbox="allow-scripts allow-forms allow-same-origin allow-popups">
+            </iframe>
           </div>
         </div>
       </div>
@@ -686,6 +710,18 @@
     const COGNIGY_WEBRTC_ENDPOINT_URL =
       "https://endpoint-trial.cognigy.ai/a00e6f298c6e5dd6414ba0b351f883a05b70f273cafe3ec41706ddb89dccf8a0";
 
+    // ===== xApp / ntfy config =====
+    // Public ntfy topic (anyone who knows it can publish/read)
+    const NTFY_TOPIC = "nw-xapp-demo-9f6b8c2a4d7e41c1b3a8f0";
+    const XAPP_TRIGGER_PHRASE =
+      "Click this link to view your personalised saving account options.";
+
+    // fallback for testing until ntfy updates it
+    const FALLBACK_XAPP_URL = "https://example.com";
+
+    let latestXappUrl = null;   // overwritten by ntfy
+    let latestXappStep = null;
+
     // ========= HELPERS =========
     const byId = (id) => document.getElementById(id);
     const show = (el) => el.classList.add("show");
@@ -698,6 +734,84 @@
       return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== "hidden";
     }
 
+    // ========= xApp UI =========
+    function showXappCta(){
+      const area = byId("xappCtaArea");
+      if (!area) return;
+      area.style.display = "block";
+      updateXappCtaButton();
+    }
+
+    function hideXappCta(){
+      const area = byId("xappCtaArea");
+      if (!area) return;
+      area.style.display = "none";
+    }
+
+    function updateXappCtaButton(){
+      const btn = byId("btnOpenXapp");
+      if (!btn) return;
+      const url = latestXappUrl || FALLBACK_XAPP_URL;
+
+      if (url){
+        btn.disabled = false;
+        btn.textContent = "Click Here";
+      } else {
+        btn.disabled = true;
+        btn.textContent = "Loading link…";
+      }
+    }
+
+    function openXappInApp(url){
+      const overlay = byId("xappOverlay");
+      const frame = byId("xappFrame");
+      if (!overlay || !frame) return;
+
+      frame.src = url;
+      show(overlay);
+    }
+
+    function closeXapp(){
+      const frame = byId("xappFrame");
+      if (frame) frame.src = "about:blank";
+      hide(byId("xappOverlay"));
+    }
+
+    // ========= NTFY SUBSCRIBE (SSE) =========
+    function subscribeToNtfy(){
+      const url = `https://ntfy.sh/${NTFY_TOPIC}/sse`;
+      const es = new EventSource(url);
+
+      es.onmessage = (ev) => {
+        try{
+          const envelope = JSON.parse(ev.data);
+          const msg = envelope.message;
+          if (!msg) return;
+
+          const payload = JSON.parse(msg);
+          if (payload?.type !== "xapp") return;
+
+          if (typeof payload.url === "string" && payload.url.trim()){
+            latestXappUrl = payload.url.trim();
+            latestXappStep = payload.step ?? null;
+
+            // If CTA is visible, refresh enable state
+            updateXappCtaButton();
+            console.log("xApp URL updated:", latestXappUrl, "step:", latestXappStep);
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      es.onerror = () => {
+        // auto-retries
+        console.warn("ntfy SSE disconnected (will retry)...");
+      };
+
+      window.__ntfy = es; // debug handle if you want
+    }
+
     // ========= TRANSCRIPT UI =========
     let transcriptLines = 0;
 
@@ -707,55 +821,40 @@
       el.textContent = `${transcriptLines} ${transcriptLines === 1 ? "line" : "lines"}`;
     }
 
-    function scrollTranscriptToBottom(){
-      const list = byId("transcriptList");
-      if (!list) return;
-
-      // If user has manually scrolled up, don't "fight" them.
-      // If they're already near the bottom, keep them pinned to the latest.
-      const thresholdPx = 24;
-      const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-      const shouldStick = distanceFromBottom < thresholdPx;
-
-      if (shouldStick) {
-        // Use rAF so the DOM layout includes the newly appended line
-        requestAnimationFrame(() => {
-          list.scrollTop = list.scrollHeight;
-        });
-      }
-    }
-
     function addTranscriptLine(originator, text){
       const list = byId("transcriptList");
       if (!list) return;
 
       const who = (originator || "unknown").toLowerCase();
+      const safeText = String(text || "").trim();
+      if (!safeText) return;
+
+      const thresholdPx = 24;
+      const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
+      const wasNearBottom = distanceFromBottom < thresholdPx;
+
       const line = document.createElement("div");
       line.className = `tLine ${who === "user" ? "user" : "bot"}`;
-
-      const safeText = String(text || "").trim();
       line.textContent = safeText;
 
       const meta = document.createElement("span");
       meta.className = "tMeta";
-      // ✅ Replace labels: BOT -> Cora, YOU -> Andy Pike
-      meta.textContent = (who === "user") ? "Andy Pike" : "Cora";
+      meta.textContent = who === "user" ? "Andy Pike" : "Cora";
       line.appendChild(meta);
-
-      // Before append, capture whether we're near-bottom to keep "pinned"
-      const thresholdPx = 24;
-      const distanceFromBottom = list.scrollHeight - list.scrollTop - list.clientHeight;
-      const wasNearBottom = distanceFromBottom < thresholdPx;
 
       list.appendChild(line);
       transcriptLines += 1;
       updateTranscriptCount();
 
-      // ✅ Auto-scroll to latest if user hasn't scrolled up
       if (wasNearBottom) {
         requestAnimationFrame(() => {
           list.scrollTop = list.scrollHeight;
         });
+      }
+
+      // Show CTA when Cora says the trigger phrase
+      if (who !== "user" && safeText.includes(XAPP_TRIGGER_PHRASE)) {
+        showXappCta();
       }
     }
 
@@ -764,6 +863,7 @@
       if (list) list.innerHTML = "";
       transcriptLines = 0;
       updateTranscriptCount();
+      hideXappCta();
     }
 
     // ========= WEBSOCKET TAP (captures SIP INFO frames with JSON _transcription) =========
@@ -780,10 +880,8 @@
           const data = ev.data;
           if (typeof data !== "string") return;
 
-          // Fast pre-filter
           if (!data.includes('"_transcription"')) return;
 
-          // SIP framing: headers + blank line + JSON body
           const splitIndex = data.indexOf("\r\n\r\n");
           if (splitIndex === -1) return;
 
@@ -803,14 +901,13 @@
               }
             }
           } catch {
-            // ignore parse errors
+            // ignore
           }
         });
 
         return ws;
       };
 
-      // Preserve static props (helps compatibility)
       window.WebSocket.prototype = NativeWebSocket.prototype;
       window.WebSocket.OPEN = NativeWebSocket.OPEN;
       window.WebSocket.CLOSED = NativeWebSocket.CLOSED;
@@ -818,7 +915,6 @@
       window.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
     }
 
-    // Install immediately BEFORE widget loads
     installWebSocketTranscriptionTap();
 
     // ========= WIDGET LOADER / INIT =========
@@ -962,7 +1058,10 @@
 
     // ========= UI wiring =========
     document.addEventListener("DOMContentLoaded", () => {
-      // Projection modal (kept minimal for this demo)
+      // start listening for xApp updates immediately
+      subscribeToNtfy();
+
+      // Projection modal
       byId("btnProjection").addEventListener("click", () => show(byId("projectionModal")));
       byId("btnCloseProjection").addEventListener("click", () => hide(byId("projectionModal")));
       byId("btnProjectionClose").addEventListener("click", () => hide(byId("projectionModal")));
@@ -970,7 +1069,7 @@
         if (e.target === byId("projectionModal")) hide(byId("projectionModal"));
       });
 
-      // Projection -> Call
+      // Projection -> Call Now
       byId("btnProjectionCall").addEventListener("click", () => {
         hide(byId("projectionModal"));
         show(byId("callOverlay"));
@@ -1003,12 +1102,22 @@
       // Transcript controls
       byId("btnClearTranscript").addEventListener("click", () => clearTranscript());
 
+      // xApp CTA click
+      byId("btnOpenXapp").addEventListener("click", () => {
+        const url = latestXappUrl || FALLBACK_XAPP_URL;
+        if (!url) return;
+        openXappInApp(url);
+      });
+
+      // xApp overlay close
+      byId("btnCloseXapp").addEventListener("click", () => closeXapp());
+      byId("xappOverlay").addEventListener("click", (e) => {
+        if (e.target === byId("xappOverlay")) closeXapp();
+      });
+
       setStatus("Idle");
       updateTranscriptCount();
-
-      // Optional: ensure transcript starts pinned
-      const list = byId("transcriptList");
-      if (list) list.scrollTop = list.scrollHeight;
+      updateXappCtaButton();
     });
   </script>
 </body>
