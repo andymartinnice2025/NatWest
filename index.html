@@ -546,13 +546,11 @@
             <div class="avatar">NW</div>
             <div class="bubble">
               <div class="bubbleText">
-                <strong>In-App Message:</strong> Hi Andy 👋 We’ve noticed you’ve had around <b>£5,000</b> sitting in your current account over the past few months.
-                You could potentially earn more on that money instead of leaving it in your current account.
-                Would you like to see what that could look like?
+                <strong>In-App Message:</strong> Hi Andy 👋 We’re here to help you make the most of your money. You may have savings that could potentially earn more depending on your goals. Would you like to see what that could look like? 
               </div>
 
               <div class="btnRow">
-                <button class="btn primary" id="btnProjection">📊 View Projection</button>
+                <button class="btn primary" id="btnProjection">📊 Explore Options</button>
                 <button class="btn call" id="btnCallNow">📞 Call Now</button>
               </div>
 
@@ -713,14 +711,23 @@
     // ===== xApp / ntfy config =====
     // Public ntfy topic (anyone who knows it can publish/read)
     const NTFY_TOPIC = "nw-xapp-demo-9f6b8c2a4d7e41c1b3a8f0";
-    const XAPP_TRIGGER_PHRASE =
-      "Click this link to view your personalised saving account options.";
 
-    // fallback for testing until ntfy updates it
+    // Two trigger phrases (step 1 and step 2)
+    const XAPP_TRIGGER_PHRASE_1 =
+      "Click this link to view your personalised saving account options.";
+    const XAPP_TRIGGER_PHRASE_2 =
+      "Click here to complete the application process";
+
+    // Fallback for testing if ntfy hasn't posted yet
     const FALLBACK_XAPP_URL = "https://example.com";
 
-    let latestXappUrl = null;   // overwritten by ntfy
+    // Latest dynamic xApp info (overwritten by ntfy)
+    let latestXappUrl = null;
     let latestXappStep = null;
+
+    // CTA state: what we're currently offering, and what was already used
+    let pendingXappStep = null;
+    let lastConsumedXappStep = null;
 
     // ========= HELPERS =========
     const byId = (id) => document.getElementById(id);
@@ -735,9 +742,17 @@
     }
 
     // ========= xApp UI =========
-    function showXappCta(){
+    function showXappCta(step){
       const area = byId("xappCtaArea");
       if (!area) return;
+
+      pendingXappStep = step;
+
+      // Don't re-show for a step that has already been used
+      if (pendingXappStep !== null && pendingXappStep === lastConsumedXappStep) {
+        return;
+      }
+
       area.style.display = "block";
       updateXappCtaButton();
     }
@@ -748,10 +763,26 @@
       area.style.display = "none";
     }
 
+    function getUrlForPendingStep(){
+      // If you want to REQUIRE step match, do it here:
+      // - If pending step is set, only accept latestXappUrl when latestXappStep matches.
+      if (pendingXappStep != null) {
+        if (latestXappUrl && latestXappStep != null && Number(latestXappStep) === Number(pendingXappStep)) {
+          return latestXappUrl;
+        }
+        // No matching step yet -> no URL (forces "Loading...")
+        return null;
+      }
+
+      // No pending step: allow latest or fallback
+      return latestXappUrl || FALLBACK_XAPP_URL;
+    }
+
     function updateXappCtaButton(){
       const btn = byId("btnOpenXapp");
       if (!btn) return;
-      const url = latestXappUrl || FALLBACK_XAPP_URL;
+
+      const url = getUrlForPendingStep() || (pendingXappStep == null ? FALLBACK_XAPP_URL : null);
 
       if (url){
         btn.disabled = false;
@@ -795,7 +826,7 @@
             latestXappUrl = payload.url.trim();
             latestXappStep = payload.step ?? null;
 
-            // If CTA is visible, refresh enable state
+            // If CTA is visible / pending, refresh enable state
             updateXappCtaButton();
             console.log("xApp URL updated:", latestXappUrl, "step:", latestXappStep);
           }
@@ -852,9 +883,13 @@
         });
       }
 
-      // Show CTA when Cora says the trigger phrase
-      if (who !== "user" && safeText.includes(XAPP_TRIGGER_PHRASE)) {
-        showXappCta();
+      // Show CTA when Cora says either trigger phrase
+      if (who !== "user") {
+        if (safeText.includes(XAPP_TRIGGER_PHRASE_1)) {
+          showXappCta(1);
+        } else if (safeText.includes(XAPP_TRIGGER_PHRASE_2)) {
+          showXappCta(2);
+        }
       }
     }
 
@@ -863,7 +898,12 @@
       if (list) list.innerHTML = "";
       transcriptLines = 0;
       updateTranscriptCount();
+
+      // reset CTA state for a clean run
+      pendingXappStep = null;
+      lastConsumedXappStep = null;
       hideXappCta();
+      updateXappCtaButton();
     }
 
     // ========= WEBSOCKET TAP (captures SIP INFO frames with JSON _transcription) =========
@@ -1058,7 +1098,7 @@
 
     // ========= UI wiring =========
     document.addEventListener("DOMContentLoaded", () => {
-      // start listening for xApp updates immediately
+      // Start listening for xApp updates immediately
       subscribeToNtfy();
 
       // Projection modal
@@ -1102,10 +1142,17 @@
       // Transcript controls
       byId("btnClearTranscript").addEventListener("click", () => clearTranscript());
 
-      // xApp CTA click
+      // xApp CTA click: HIDE immediately and mark step as consumed
       byId("btnOpenXapp").addEventListener("click", () => {
-        const url = latestXappUrl || FALLBACK_XAPP_URL;
+        const url = getUrlForPendingStep() || (pendingXappStep == null ? FALLBACK_XAPP_URL : null);
         if (!url) return;
+
+        if (pendingXappStep !== null) {
+          lastConsumedXappStep = pendingXappStep;
+        }
+
+        hideXappCta();          // remove CTA once clicked
+        updateXappCtaButton();  // updates disabled state text if needed
         openXappInApp(url);
       });
 
